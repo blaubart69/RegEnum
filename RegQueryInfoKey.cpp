@@ -10,31 +10,53 @@
 #include <algorithm>
 
 
-bool iequals(const std::wstring_view& a, const std::wstring_view& b)
+bool iequals(const std::wstring_view a, std::wstring::const_iterator b_begin, std::wstring::const_iterator b_end)
 {
     return std::equal(a.begin(), a.end(),
-                      b.begin(), b.end(),
-                      [](char a, char b) {
-                          return std::toupper(a) == std::toupper(b);
-                      });
+                      b_begin, b_end,
+                      [](const wchar_t a, const wchar_t b) {
+                            // If the high-order word of this parameter is zero, 
+                            // the low-order word must contain a single character to be converted.
+                            return CharUpperW((LPWSTR)a) == CharUpperW((LPWSTR)b);
+				        });
 }
 
-bool parse_full_key(wchar_t* fullkey_param, std::optional<std::wstring_view>* machine, HKEY* key, std::optional<std::wstring_view>* subkey)
+DWORD ConvertFiletimeToLocalTime(const FILETIME* filetime, SYSTEMTIME* localTime)
+{
+	SYSTEMTIME UTCSysTime;
+	if (!FileTimeToSystemTime(filetime, &UTCSysTime))
+	{
+		fprintf(stderr,"FileTimeToSystemTime\n");
+        return GetLastError();
+	}
+	else if (!SystemTimeToTzSpecificLocalTime(NULL, &UTCSysTime, localTime))
+	{
+		fprintf(stderr, "SystemTimeToTzSpecificLocalTime\n");
+        return GetLastError();
+	}
+
+	return 0;
+}
+
+bool parse_full_key(wchar_t* fullkey_param, std::optional<std::wstring>* machine, HKEY* key, std::optional<std::wstring>* subkey)
 {
     machine->reset();
-    key = nullptr;
+    *key = NULL;
     subkey->reset();
 
     try {
-        const std::wregex registry_regex(LR"((?:\\\\([^\\]+)\\)?(HKLM|HKCU|HKCR|HKU|HKCC)(?:\\(.+))?)", std::regex_constants::icase);
+        const std::wregex registry_regex(LR"((?:(\\\\[^\\]+)\\)?(HKLM|HKCU|HKCR|HKU|HKCC)(?:\\(.+))?)", std::regex_constants::icase);
         const std::wstring fullkey(fullkey_param);
 
         std::wsmatch match;
         if ( std::regex_match(fullkey, match, registry_regex) )
         {
-            wprintf(L"Group 1: %s\n", match[1].str().c_str());
-            wprintf(L"Group 2: %s\n", match[2].str().c_str());
-            wprintf(L"Group 3: %s\n", match[3].str().c_str());
+            wprintf(L"machine: %s\n"
+                    L"key    : %s\n"
+                    L"subkey : %s\n", 
+                    match[1].str().c_str(), 
+                    match[2].str().c_str(), 
+                    match[3].str().c_str());
 
             if ( ! match[1].str().empty() ) {
                 *machine = match[1].str();
@@ -44,17 +66,20 @@ bool parse_full_key(wchar_t* fullkey_param, std::optional<std::wstring_view>* ma
                 *subkey = match[3].str();
             }
 
-            std::wstring_view root_key(match[2].str());
-            if      ( iequals(root_key, L"HKLM") ) { *key = HKEY_LOCAL_MACHINE; }
-            else if ( iequals(root_key, L"HKCU") ) { *key = HKEY_CURRENT_USER; }
-            else if ( iequals(root_key, L"HKCR") ) { *key = HKEY_CLASSES_ROOT; }
-            else if ( iequals(root_key, L"HKU" ) ) { *key = HKEY_USERS; }
-            else if ( iequals(root_key, L"HKCC") ) { *key = HKEY_CURRENT_CONFIG; }
+            auto m = match[2];
+            auto m_begin = m.first;
+            auto m_end = m.second;
+
+            if      ( iequals(L"HKLM", m_begin, m_end) ) { *key = HKEY_LOCAL_MACHINE; }
+            else if ( iequals(L"HKCU", m_begin, m_end) ) { *key = HKEY_CURRENT_USER; }
+            else if ( iequals(L"HKCR", m_begin, m_end) ) { *key = HKEY_CLASSES_ROOT; }
+            else if ( iequals(L"HKU",  m_begin, m_end) ) { *key = HKEY_USERS; }
+            else if ( iequals(L"HKCC", m_begin, m_end) ) { *key = HKEY_CURRENT_CONFIG; }
 
         }
         else
         {
-            puts("NO match!\n");
+            return false;
         }
     }
     catch (std::exception& ex)
@@ -65,6 +90,52 @@ bool parse_full_key(wchar_t* fullkey_param, std::optional<std::wstring_view>* ma
     return true;
 }
 
+LSTATUS enum_key(const HKEY key)
+{
+    std::vector<WCHAR> key_name;
+    FILETIME ft;
+    SYSTEMTIME localTime;
+    int idx=0;
+
+    key_name.resize(8);
+    for (;;) 
+    {
+        DWORD cchName = key_name.size();
+        const LSTATUS enum_rc = RegEnumKeyExW(
+            key
+            , idx
+            , key_name.data()
+            , &cchName
+            , NULL      // Reserved
+            , NULL      // lpClass
+            , NULL      // lpcchClass
+            , &ft);
+        if ( enum_rc == ERROR_MORE_DATA)
+        {
+            key_name.resize(key_name.size() * 4);
+        }
+        else if (enum_rc == ERROR_NO_MORE_ITEMS) 
+        {
+            return 0;
+        }
+        else if (enum_rc != ERROR_SUCCESS)
+        {
+            return enum_rc;
+        }
+        else
+        {
+            if ( ConvertFiletimeToLocalTime(&ft, &localTime) == 0 )
+            {
+                wprintf(L"%4d.%02d.%02d %02d:%02d:%02d\t%s\n", 
+                    localTime.wYear, localTime.wMonth, localTime.wDay,
+                    localTime.wHour, localTime.wMinute, localTime.wSecond,
+                    key_name.data());
+            }
+            ++idx;
+        }
+    }
+}
+
 int wmain(int argc, wchar_t* argv[])
 {
     if ( argc != 2 ) {
@@ -72,15 +143,38 @@ int wmain(int argc, wchar_t* argv[])
         return 4;
     }
 
-    std::optional<std::wstring_view> machine;
-    HKEY key;
-    std::optional<std::wstring_view> subkey;
+    int rc = 0;
+    LSTATUS lstatus;
+    std::optional<std::wstring> machine;
+    HKEY base_key;
+    HKEY key = NULL;
+    std::optional<std::wstring> subkey;
 
-    if ( ! parse_full_key( argv[1], &machine, &key, &subkey ) )
+    if ( ! parse_full_key( argv[1], &machine, &base_key, &subkey ) )
     {
         fprintf(stderr, "could not parse your given key\n");
-        return 8;
+        rc = 8;
+    }
+    else if ( (lstatus=RegOpenKeyExW( 
+          base_key
+        , subkey.has_value() ? subkey.value().c_str() : NULL
+        , 0 // options
+        , KEY_READ  
+        , &key)) != ERROR_SUCCESS ) 
+    {
+        fprintf(stderr, "0x%08X RegOpenKeyExW (base_key: 0x%08X)\n", lstatus, base_key);
+        rc = 12;
+    }
+    else if ( (lstatus = enum_key(key)) != ERROR_SUCCESS )
+    {
+        fprintf(stderr, "0x%08X RegEnumKeyExW\n", lstatus);
+        rc = 14;
     }
 
-    return 0;
+    if ( key != nullptr ) 
+    {
+        RegCloseKey(key);
+    }
+
+    return rc;
 }
