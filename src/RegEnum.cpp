@@ -3,22 +3,20 @@
 
 #include <cstdio>
 
-#include <regex>
 #include <string>
 #include <string_view>
 #include <optional>
 #include <algorithm>
-
+#include <regex>
 
 bool iequals(const std::wstring_view a, std::wstring::const_iterator b_begin, std::wstring::const_iterator b_end)
 {
-    return std::equal(a.begin(), a.end(),
-                      b_begin, b_end,
-                      [](const wchar_t a, const wchar_t b) {
-                            // If the high-order word of this parameter is zero, 
-                            // the low-order word must contain a single character to be converted.
-                            return CharUpperW((LPWSTR)a) == CharUpperW((LPWSTR)b);
-				        });
+    return std::equal(a.begin(), a.end(), b_begin, b_end,
+        [](const wchar_t a, const wchar_t b) {
+            // If the high-order word of this parameter is zero, 
+            // the low-order word must contain a single character to be converted.
+            return CharUpperW((LPWSTR)a) == CharUpperW((LPWSTR)b);
+        });
 }
 
 DWORD ConvertFiletimeToLocalTime(const FILETIME* filetime, SYSTEMTIME* localTime)
@@ -51,12 +49,13 @@ bool parse_full_key(wchar_t* fullkey_param, std::optional<std::wstring>* machine
         std::wsmatch match;
         if ( std::regex_match(fullkey, match, registry_regex) )
         {
+            /*
             wprintf(L"machine: %s\n"
                     L"key    : %s\n"
                     L"subkey : %s\n", 
                     match[1].str().c_str(), 
                     match[2].str().c_str(), 
-                    match[3].str().c_str());
+                    match[3].str().c_str()); */
 
             if ( ! match[1].str().empty() ) {
                 *machine = match[1].str();
@@ -89,6 +88,7 @@ bool parse_full_key(wchar_t* fullkey_param, std::optional<std::wstring>* machine
     
     return true;
 }
+
 
 LSTATUS open_registry_key(const std::optional<std::wstring>& machine, const HKEY key, const std::optional<std::wstring>& subkey, PHKEY phkey)
 {
@@ -140,18 +140,36 @@ LSTATUS open_registry_key(const std::optional<std::wstring>& machine, const HKEY
     return lstatus;
 }
 
-LSTATUS enum_key(const HKEY key)
+LSTATUS query_key(const HKEY key, LPDWORD lpcSubKeys, LPDWORD lpcbMaxSubKeyLen, LPDWORD lpcValues, LPDWORD lpcbMaxValueNameLen, LPDWORD lpcbMaxValueLen )
+{
+    return RegQueryInfoKeyW(
+        key                   // [in]                HKEY      hKey,
+        , NULL                // [out, optional]     LPWSTR    lpClass,
+        , NULL                // [in, out, optional] LPDWORD   lpcchClass,
+        , NULL                //                     LPDWORD   lpReserved,
+        , lpcSubKeys          // [out, optional]     LPDWORD   lpcSubKeys,
+        , lpcbMaxSubKeyLen    // [out, optional]     LPDWORD   lpcbMaxSubKeyLen,
+        , NULL                // [out, optional]     LPDWORD   lpcbMaxClassLen,
+        , lpcValues           // [out, optional]     LPDWORD   lpcValues,
+        , lpcbMaxValueNameLen // [out, optional]     LPDWORD   lpcbMaxValueNameLen,
+        , lpcbMaxValueLen     // [out, optional]     LPDWORD   lpcbMaxValueLen,
+        , NULL                // [out, optional]     LPDWORD   lpcbSecurityDescriptor,
+        , NULL                // [out, optional]     PFILETIME lpftLastWriteTime
+        );
+}
+
+LSTATUS enum_keys(const HKEY key, DWORD cSubKeys, DWORD cbMaxSubKeyLen)
 {
     std::vector<WCHAR> key_name;
     FILETIME ft;
     SYSTEMTIME localTime;
-    int idx=0;
+    
+    key_name.resize(cbMaxSubKeyLen + 1);
 
-    key_name.resize(8);
-    for (;;) 
+    for (int idx=0; idx < cSubKeys; ++idx) 
     {
         DWORD cchName = key_name.size();
-        const LSTATUS enum_rc = RegEnumKeyExW(
+        const LSTATUS lstatus = RegEnumKeyExW(
             key
             , idx
             , key_name.data()
@@ -160,17 +178,17 @@ LSTATUS enum_key(const HKEY key)
             , NULL      // lpClass
             , NULL      // lpcchClass
             , &ft);
-        if ( enum_rc == ERROR_MORE_DATA)
+        if ( lstatus == ERROR_MORE_DATA)
         {
-            key_name.resize(key_name.size() * 4);
+            _putws(L"RegEnumKeyExW() ERROR_MORE_DATA. should not be possible.");
         }
-        else if (enum_rc == ERROR_NO_MORE_ITEMS) 
+        else if (lstatus == ERROR_NO_MORE_ITEMS) 
         {
-            return 0;
+            return ERROR_SUCCESS;
         }
-        else if (enum_rc != ERROR_SUCCESS)
+        else if (lstatus != ERROR_SUCCESS)
         {
-            return enum_rc;
+            return lstatus;
         }
         else
         {
@@ -181,9 +199,49 @@ LSTATUS enum_key(const HKEY key)
                     localTime.wHour, localTime.wMinute, localTime.wSecond,
                     key_name.data());
             }
-            ++idx;
         }
     }
+    return ERROR_SUCCESS;
+}
+
+LSTATUS enum_values(const HKEY key, DWORD cValues, DWORD cbMaxValueNameLen, WORD cbMaxValueLen )
+{
+    LSTATUS lstatus;
+
+    std::vector<WCHAR> value_name;
+    std::vector<BYTE>  value;
+
+    value_name.resize(cbMaxValueNameLen + 1);
+    value     .resize(cbMaxValueLen);
+
+    for (int idx=0; idx < cValues; ++idx)
+    {
+        DWORD type;
+        DWORD cchValueName = value_name.size();
+        DWORD cbData       = value.size();
+
+        if ( (lstatus=RegEnumValueW(
+            key
+            , idx
+            , value_name.data()
+            , &cchValueName
+            , NULL
+            , &type
+            , value.data()
+            , &cbData )) == ERROR_NO_MORE_ITEMS )
+        {
+            return ERROR_SUCCESS;
+        }
+        else if (lstatus != ERROR_SUCCESS )
+        {
+            return lstatus;
+        }
+        else
+        {
+            wprintf(L"%s\n", value_name.data());
+        }
+    }
+    return ERROR_SUCCESS;
 }
 
 int wmain(int argc, wchar_t* argv[])
@@ -200,6 +258,12 @@ int wmain(int argc, wchar_t* argv[])
     HKEY key = NULL;
     std::optional<std::wstring> subkey;
 
+    DWORD cSubKeys;
+    DWORD cbMaxSubKeyLen;
+    DWORD cValues;
+    DWORD cbMaxValueNameLen;
+    DWORD cbMaxValueLen;
+
     if ( ! parse_full_key( argv[1], &machine, &base_key, &subkey ) )
     {
         fprintf(stderr, "could not parse your given key\n");
@@ -209,10 +273,20 @@ int wmain(int argc, wchar_t* argv[])
     {
         rc = 12;
     }
-    else if ( (lstatus = enum_key(key)) != ERROR_SUCCESS )
+    else if ( (lstatus = query_key(key, &cSubKeys, &cbMaxSubKeyLen, &cValues, &cbMaxValueNameLen, &cbMaxValueLen)) != ERROR_SUCCESS )
     {
         fprintf(stderr, "0x%08X RegEnumKeyExW\n", lstatus);
         rc = 14;
+    }
+    else if ( (lstatus = enum_keys(key, cSubKeys, cbMaxSubKeyLen)) != ERROR_SUCCESS )
+    {
+        fprintf(stderr, "0x%08X RegEnumKeyExW\n", lstatus);
+        rc = 16;
+    }
+    else if ( (lstatus = enum_values(key, cValues, cbMaxValueNameLen, cbMaxValueLen)) != ERROR_SUCCESS )
+    {
+        fprintf(stderr, "0x%08X RegEnumValueW\n", lstatus);
+        rc = 18;
     }
 
     if ( key != nullptr ) 
