@@ -66,9 +66,9 @@ bool parse_full_key(wchar_t* fullkey_param, std::optional<std::wstring>* machine
                 *subkey = match[3].str();
             }
 
-            auto m = match[2];
+            auto m       = match[2];
             auto m_begin = m.first;
-            auto m_end = m.second;
+            auto m_end   = m.second;
 
             if      ( iequals(L"HKLM", m_begin, m_end) ) { *key = HKEY_LOCAL_MACHINE; }
             else if ( iequals(L"HKCU", m_begin, m_end) ) { *key = HKEY_CURRENT_USER; }
@@ -88,6 +88,56 @@ bool parse_full_key(wchar_t* fullkey_param, std::optional<std::wstring>* machine
     }
     
     return true;
+}
+
+LSTATUS open_registry_key(const std::optional<std::wstring>& machine, const HKEY key, const std::optional<std::wstring>& subkey, PHKEY phkey)
+{
+    LSTATUS lstatus  = ERROR_SUCCESS;
+    HKEY    base_key = NULL;
+
+    if ( machine.has_value() )
+    {
+        HKEY remote_key;
+        if ( (lstatus=RegConnectRegistryExW(
+            machine.value().c_str()
+            , key
+            , 0
+            , &remote_key
+            )) != ERROR_SUCCESS )
+        {
+            fprintf(stderr,"0x%0X RegConnectRegistryExW\n", lstatus);
+        }
+        else
+        {
+            base_key = remote_key;
+        }
+    }
+    else
+    {
+        base_key = key;
+    }
+    
+    if (lstatus == ERROR_SUCCESS)
+    {
+        if ( subkey.has_value() ) 
+        {
+            if ( (lstatus=RegOpenKeyExW( 
+            base_key
+            , subkey.value().c_str()
+            , 0 // options
+            , KEY_READ  
+            , phkey)) != ERROR_SUCCESS ) 
+            {
+                fprintf(stderr,"0x%0X RegOpenKeyExW\n", lstatus);
+            }
+        }
+        else
+        {
+            *phkey = base_key;
+        }
+    }
+
+    return lstatus;
 }
 
 LSTATUS enum_key(const HKEY key)
@@ -155,14 +205,8 @@ int wmain(int argc, wchar_t* argv[])
         fprintf(stderr, "could not parse your given key\n");
         rc = 8;
     }
-    else if ( (lstatus=RegOpenKeyExW( 
-          base_key
-        , subkey.has_value() ? subkey.value().c_str() : NULL
-        , 0 // options
-        , KEY_READ  
-        , &key)) != ERROR_SUCCESS ) 
+    else if ( (lstatus=open_registry_key(machine, base_key, subkey, &key)) != ERROR_SUCCESS ) 
     {
-        fprintf(stderr, "0x%08X RegOpenKeyExW (base_key: 0x%08X)\n", lstatus, base_key);
         rc = 12;
     }
     else if ( (lstatus = enum_key(key)) != ERROR_SUCCESS )
