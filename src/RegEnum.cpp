@@ -275,7 +275,7 @@ int wmain(int argc, wchar_t* argv[])
     }
     else if ( (lstatus = query_key(key, &cSubKeys, &cbMaxSubKeyLen, &cValues, &cbMaxValueNameLen, &cbMaxValueLen)) != ERROR_SUCCESS )
     {
-        fprintf(stderr, "0x%08X RegEnumKeyExW\n", lstatus);
+        fprintf(stderr, "0x%08X RegQueryInfoKeyW\n", lstatus);
         rc = 14;
     }
     else if ( (lstatus = enum_keys(key, cSubKeys, cbMaxSubKeyLen)) != ERROR_SUCCESS )
