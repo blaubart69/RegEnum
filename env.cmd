@@ -1,4 +1,4 @@
-c:\tools\VisualStudio2019\Community\VC\Auxiliary\Build\vcvars64.bat
+call c:\tools\VisualStudio2019\Community\VC\Auxiliary\Build\vcvars64.bat
 
 set INCLUDE=^
 C:\tools\VisualStudio2019\Community\VC\Tools\MSVC\14.24.28314\ATLMFC\include;^

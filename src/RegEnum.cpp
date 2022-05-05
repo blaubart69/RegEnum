@@ -3,15 +3,15 @@
 
 #include <cstdio>
 
+#include <vector>
 #include <string>
 #include <string_view>
 #include <optional>
 #include <algorithm>
-#include <regex>
 
-bool iequals(const std::wstring_view a, std::wstring::const_iterator b_begin, std::wstring::const_iterator b_end)
+bool iequals(const std::wstring_view a, std::wstring_view b)
 {
-    return std::equal(a.begin(), a.end(), b_begin, b_end,
+    return std::equal(a.begin(), a.end(), b.begin(), b.end(),
         [](const wchar_t a, const wchar_t b) {
             // If the high-order word of this parameter is zero, 
             // the low-order word must contain a single character to be converted.
@@ -36,59 +36,72 @@ DWORD ConvertFiletimeToLocalTime(const FILETIME* filetime, SYSTEMTIME* localTime
 	return 0;
 }
 
-bool parse_full_key(wchar_t* fullkey_param, std::optional<std::wstring>* machine, HKEY* key, std::optional<std::wstring>* subkey)
+bool parse_full_key_zfuass(wchar_t* fullkey_param, std::optional<std::wstring>* machine, HKEY* key, std::optional<std::wstring>* subkey)
 {
-    machine->reset();
-    *key = NULL;
-    subkey->reset();
+    std::wstring_view input(fullkey_param);
 
-    try {
-        const std::wregex registry_regex(LR"((?:(\\\\[^\\]+)\\)?(HKLM|HKCU|HKCR|HKU|HKCC)(?:\\(.+))?)", std::regex_constants::icase);
-        const std::wstring fullkey(fullkey_param);
-
-        std::wsmatch match;
-        if ( std::regex_match(fullkey, match, registry_regex) )
-        {
-            /*
-            wprintf(L"machine: %s\n"
-                    L"key    : %s\n"
-                    L"subkey : %s\n", 
-                    match[1].str().c_str(), 
-                    match[2].str().c_str(), 
-                    match[3].str().c_str()); */
-
-            if ( ! match[1].str().empty() ) {
-                *machine = match[1].str();
-            }
-
-            if ( ! match[3].str().empty() ) {
-                *subkey = match[3].str();
-            }
-
-            auto m       = match[2];
-            auto m_begin = m.first;
-            auto m_end   = m.second;
-
-            if      ( iequals(L"HKLM", m_begin, m_end) ) { *key = HKEY_LOCAL_MACHINE; }
-            else if ( iequals(L"HKCU", m_begin, m_end) ) { *key = HKEY_CURRENT_USER; }
-            else if ( iequals(L"HKCR", m_begin, m_end) ) { *key = HKEY_CLASSES_ROOT; }
-            else if ( iequals(L"HKU",  m_begin, m_end) ) { *key = HKEY_USERS; }
-            else if ( iequals(L"HKCC", m_begin, m_end) ) { *key = HKEY_CURRENT_CONFIG; }
-
-        }
-        else
-        {
+    if ( input.length() < 3 ) {
+        return false;
+    }
+    // --- machine -----------------------------------------------------------
+    size_t idx_key;
+    if ( input[0] == L'\\' && input[1] == L'\\' ) {
+        idx_key = input.find_first_of(L'\\', 2);
+        if ( idx_key == 2 || idx_key == std::string::npos ) {
+            fprintf(stderr,"wrong machine name\n");
             return false;
         }
+        else {
+            machine->emplace(input.substr(2, idx_key-2));
+            idx_key += 1;
+        }
     }
-    catch (std::exception& ex)
-    {
-        puts(ex.what());
+    else {
+        machine->reset();
+        idx_key = 0;
     }
-    
+    // --- key ---------------------------------------------------------------
+    if ( idx_key >= input.length() ) {
+        fprintf(stderr,"no key found\n");
+        return false;
+    }
+
+    size_t idx_subkey = input.find_first_of(L'\\', idx_key);
+    std::wstring_view key_name;
+    if ( idx_subkey == std::string::npos ) {
+        key_name = input.substr(idx_key);
+    }
+    else {
+        // 0123456789
+        // \\.\key\su
+        //     ^  ^     == 7-4=3
+        key_name = input.substr(idx_key, idx_subkey-idx_key);
+        idx_subkey += 1;
+    }    
+
+    if      ( iequals(L"HKLM", key_name) ) { *key = HKEY_LOCAL_MACHINE; }
+    else if ( iequals(L"HKCU", key_name) ) { *key = HKEY_CURRENT_USER; }
+    else if ( iequals(L"HKCR", key_name) ) { *key = HKEY_CLASSES_ROOT; }
+    else if ( iequals(L"HKU",  key_name) ) { *key = HKEY_USERS; }
+    else if ( iequals(L"HKCC", key_name) ) { *key = HKEY_CURRENT_CONFIG; }
+    else { fprintf(stderr,"wrong key\n"); return false; }
+    // --- subkey ------------------------------------------------------------
+    if ( idx_subkey >= input.length() ) {
+        subkey->reset();
+    }
+    else {
+        subkey->emplace( input.substr(idx_subkey) );
+    }
+
+    wprintf(L"machine: %s\n"
+            L"key    : %s\n"
+            L"subkey : %s\n", 
+            machine->has_value() ? machine->value().c_str() : L"n/a", 
+            std::wstring(key_name).c_str(), 
+            subkey->has_value() ? subkey->value().c_str() : L"n/a"); 
+
     return true;
 }
-
 
 LSTATUS open_registry_key(const std::optional<std::wstring>& machine, const HKEY key, const std::optional<std::wstring>& subkey, PHKEY phkey)
 {
@@ -129,6 +142,10 @@ LSTATUS open_registry_key(const std::optional<std::wstring>& machine, const HKEY
             , phkey)) != ERROR_SUCCESS ) 
             {
                 fprintf(stderr,"0x%0X RegOpenKeyExW\n", lstatus);
+            }
+            else
+            {
+                RegCloseKey(base_key);
             }
         }
         else
@@ -264,7 +281,8 @@ int wmain(int argc, wchar_t* argv[])
     DWORD cbMaxValueNameLen;
     DWORD cbMaxValueLen;
 
-    if ( ! parse_full_key( argv[1], &machine, &base_key, &subkey ) )
+    //if ( ! parse_full_key( argv[1], &machine, &base_key, &subkey ) )
+    if ( ! parse_full_key_zfuass( argv[1], &machine, &base_key, &subkey ) )
     {
         fprintf(stderr, "could not parse your given key\n");
         rc = 8;
@@ -296,3 +314,73 @@ int wmain(int argc, wchar_t* argv[])
 
     return rc;
 }
+
+
+
+
+/*
+
+bool iequals(const std::wstring_view a, std::wstring::const_iterator b_begin, std::wstring::const_iterator b_end)
+{
+    return std::equal(a.begin(), a.end(), b_begin, b_end,
+        [](const wchar_t a, const wchar_t b) {
+            // If the high-order word of this parameter is zero, 
+            // the low-order word must contain a single character to be converted.
+            return CharUpperW((LPWSTR)a) == CharUpperW((LPWSTR)b);
+        });
+}
+
+
+bool parse_full_key(wchar_t* fullkey_param, std::optional<std::wstring>* machine, HKEY* key, std::optional<std::wstring>* subkey)
+{
+    machine->reset();
+    *key = NULL;
+    subkey->reset();
+
+    try {
+        const std::wregex registry_regex(LR"((?:(\\\\[^\\]+)\\)?(HKLM|HKCU|HKCR|HKU|HKCC)(?:\\(.+))?)", std::regex_constants::icase);
+        const std::wstring fullkey(fullkey_param);
+
+        std::wsmatch match;
+        if ( std::regex_match(fullkey, match, registry_regex) )
+        {
+            
+            wprintf(L"machine: %s\n"
+                    L"key    : %s\n"
+                    L"subkey : %s\n", 
+                    match[1].str().c_str(), 
+                    match[2].str().c_str(), 
+                    match[3].str().c_str()); 
+
+            if ( ! match[1].str().empty() ) {
+                *machine = match[1].str();
+            }
+
+            if ( ! match[3].str().empty() ) {
+                *subkey = match[3].str();
+            }
+
+            auto m       = match[2];
+            auto m_begin = m.first;
+            auto m_end   = m.second;
+
+            if      ( iequals(L"HKLM", m_begin, m_end) ) { *key = HKEY_LOCAL_MACHINE; }
+            else if ( iequals(L"HKCU", m_begin, m_end) ) { *key = HKEY_CURRENT_USER; }
+            else if ( iequals(L"HKCR", m_begin, m_end) ) { *key = HKEY_CLASSES_ROOT; }
+            else if ( iequals(L"HKU",  m_begin, m_end) ) { *key = HKEY_USERS; }
+            else if ( iequals(L"HKCC", m_begin, m_end) ) { *key = HKEY_CURRENT_CONFIG; }
+
+        }
+        else
+        {
+            return false;
+        }
+    }
+    catch (std::exception& ex)
+    {
+        puts(ex.what());
+    }
+    
+    return true;
+}
+*/
