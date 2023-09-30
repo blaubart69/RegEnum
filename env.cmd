@@ -12,3 +12,8 @@ C:\tools\VisualStudio2019\Community\VC\Tools\MSVC\14.24.28314\ATLMFC\lib\x64;^
 C:\tools\VisualStudio2019\Community\VC\Tools\MSVC\14.24.28314\lib\x64;^
 c:\tools\WindowsKits\10\Lib\10.0.19041.0\um\x64;^
 c:\tools\WindowsKits\10\Lib\10.0.19041.0\ucrt\x64;
+
+rem ***
+rem *** for msbuild
+rem ***
+set IncludePath=%INCLUDE%

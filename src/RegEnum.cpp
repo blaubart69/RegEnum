@@ -253,9 +253,9 @@ LSTATUS enum_values(const HKEY key, DWORD cValues, DWORD cbMaxValueNameLen, WORD
         {
             return lstatus;
         }
-        else
+        else if ( type == REG_SZ)
         {
-            wprintf(L"%s\n", value_name.data());
+            wprintf(L"REG_SZ\t%s\t%s\n", value_name.data(), (WCHAR*)value.data());
         }
     }
     return ERROR_SUCCESS;
